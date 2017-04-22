@@ -2,20 +2,9 @@
 import cwiid
 import sys
 import RPi.GPIO as GPIO
-import pigpio
 import os
 import time
-
-# BCM Pin mappings for motors
-# right motor
-ENABLE2 = 21
-IN21 = 20
-IN22 = 16
-
-# Left motor
-ENABLE1 = 26
-IN11 = 19
-IN12 = 13
+from pololu_drv8835_rpi import motors, MAX_SPEED
 
 # Hex masks for wii buttons
 class WiiButtons():
@@ -30,43 +19,6 @@ class WiiButtons():
     ONE   = 0x0002
     TWO   = 0x0001
     
-class HBridge():
-    '''
-    HBridge class for controlling motor.  Initialize with pins and pigpio
-    reference for PWM motoro speed control.  
-    
-    The chip used is a dual-HBridge L293D.  Wiring reference is located at:
-    http://www.instructables.com/id/L293D-Motor-Driver-Pinout-Diagram/
-    
-    '''
-    def __init__(self, enable, in1, in2, pig):
-        self._enable = enable
-        self._in1 = in1
-        self._in2 = in2
-        self._pig = pig
-        GPIO.setup(in1, GPIO.OUT)
-        GPIO.setup(in2, GPIO.OUT)
-        GPIO.output(in1, 0)
-        GPIO.output(in2, 0)
-        self._pig.set_mode(enable, pigpio.OUTPUT)
-        self._pig.set_PWM_frequency(enable,60)
-        self._pig.set_PWM_range(enable, 100)
-        
-    def go(self, speed=100, forward=True):
-        pin1=1
-        pin2=0
-        if (forward is False):
-            pin1=0
-            pin2=1
-        GPIO.output(self._in1, pin1)
-        GPIO.output(self._in2, pin2)
-        self._pig.set_PWM_dutycycle(self._enable, speed)
-        
-    def stop(self):
-        GPIO.output(self._in1, 0)
-        GPIO.output(self._in2, 0)
-        self._pig.set_PWM_dutycycle(self._enable, 0)
-    
 def read_buttons(buttons):
     '''
     Response to button presses on the wiimote.  Input buttons is an integer
@@ -76,54 +28,46 @@ def read_buttons(buttons):
     result = ''
     left_go = False
     right_go = False
-    left_fwd = True
-    right_fwd = True
+    left_fwd = 1.0
+    right_fwd = 1.0
     left_speed = speed
     right_speed = speed
-    diff_gain = 0.55
+    diff_gain = 0.75
     if (buttons & WiiButtons.A):
         result += 'A-'
     if (buttons & WiiButtons.B):
         result += 'B-'
         ''' ...turbo... '''
-        #diff_gain = 0.5
-        left_speed = 100
-        right_speed = 100
-        #speed_up()
-        #speed_up()
+        left_speed = MAX_SPEED
+        right_speed = MAX_SPEED
     if (buttons & WiiButtons.UP):
         ''' drive forward '''
         result += 'UP-'
         left_go = True
         right_go = True
         
-        #left_motor.go(speed=speed)
-        #right_motor.go(speed=speed)
     if (buttons & WiiButtons.DOWN):
         ''' drive backward '''
         result += 'DOWN-'
         left_go = True
         right_go = True
-        left_fwd = False
-        right_fwd = False
-        #left_speed = diff_gain*speed
-        #right_speed = diff_gain*speed
-        #left_motor.go(forward=False, speed=speed)
-        #right_motor.go(forward=False, speed=speed)
+        left_fwd = -1.0
+        right_fwd = -1.0
+
     if (buttons & WiiButtons.LEFT):
         ''' Circle left.  Depressing in conjunction with down will spin in place. '''
         result += 'LEFT-'
         right_go = True
-        right_fwd = True
+        right_fwd = 1.0
         left_speed = diff_gain*speed
-        #right_motor.go(speed=0.8*speed)
+
     if (buttons & WiiButtons.RIGHT):
         ''' Circle right.  Depressing in conjunction with down will spin in place. '''
         result += 'RIGHT-'
         left_go = True
-        left_fwd = True
+        left_fwd = 1.0
         right_speed = diff_gain*speed
-        #left_motor.go(speed=0.8*speed)
+
     if (buttons & WiiButtons.MINUS):
         ''' Reduce speed '''
         result += 'MINUS-'
@@ -139,15 +83,14 @@ def read_buttons(buttons):
 
     ''' On button release, bot will stop in place '''
     if left_go:
-        left_motor.go(forward=left_fwd, speed=left_speed)
+        motors.motor2.setSpeed(int(left_fwd*left_speed))
     else:
-        left_motor.stop()
+        motors.motor2.setSpeed(0)
 
     if right_go:
-        right_motor.go(forward=right_fwd, speed=right_speed)
+        motors.motor1.setSpeed(int(right_fwd*right_speed))
     else:
-        right_motor.stop()
-
+        motors.motor1.setSpeed(0)
         
     return result
         
@@ -170,29 +113,29 @@ def set_leds():
     global wiimote
     print('speed='+str(speed))
     led = 0
-    if ( speed >= 25):
+    if ( speed >= MAX_SPEED/4):
         led |= cwiid.LED1_ON
-    if ( speed >= 50):
+    if ( speed >= MAX_SPEED/2):
         led |= cwiid.LED2_ON
-    if ( speed >= 75):
+    if ( speed >= 3*MAX_SPEED/4):
         led |= cwiid.LED3_ON
-    if ( speed >= 100):
+    if ( speed >= MAX_SPEED):
         led |= cwiid.LED4_ON
-        speed = 100
+        speed = MAX_SPEED
     wiimote.led = led
 
 def speed_up():
     ''' Increase speed '''
     global speed
-    if (speed <= 90):
-        speed += 10;
+    if (speed < MAX_SPEED):
+        speed += MAX_SPEED/10;
     set_leds()
 
 def speed_down():
     ''' Decrease speed '''
     global speed
-    if ( speed >= 10):
-        speed -= 10;
+    if ( speed >= MAX_SPEED/10):
+        speed -= MAX_SPEED/10;
     set_leds()
         
 def main():
@@ -214,14 +157,12 @@ def main():
     exit = False
     
     # Demonstrate that motors are working
-    left_motor.go()
-    right_motor.go()
+    quarter_speed = int(MAX_SPEED/4)
+    motors.setSpeeds(quarter_speed, quarter_speed)
     time.sleep(0.25)
-    left_motor.go(forward=False)
-    right_motor.go(forward=False)
+    motors.setSpeeds(-quarter_speed, -quarter_speed)
     time.sleep(0.25)
-    left_motor.stop()
-    right_motor.stop()
+    motors.setSpeeds(0,0)
 
     # Infinite loop / press x to quit
     while not exit:
@@ -233,12 +174,9 @@ def main():
 
 
 # Setup motor controllers and other globals
-GPIO.setmode(GPIO.BCM)
-GPIO.setwarnings(False)
-pig = pigpio.pi()
-right_motor = HBridge(ENABLE1, IN11, IN12, pig)
-left_motor = HBridge(ENABLE2, IN21, IN22, pig) 
+#GPIO.setmode(GPIO.BCM)
+#GPIO.setwarnings(False)
 wiimote = None
-speed = 50
+speed = MAX_SPEED/2
 
 main()
